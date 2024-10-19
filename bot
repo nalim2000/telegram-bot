@@ -1,143 +1,60 @@
+import pandas as pd
+import requests
+from aiogram import Bot, Dispatcher, executor, types
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
-import sqlite3
-from datetime import datetime, timedelta
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
-from dotenv import load_dotenv
-from threading import Timer
 
-# Загрузка токена из .env файла
-load_dotenv()
-TOKEN = os.getenv('TOKEN')
+API_TOKEN = '7777670053:AAG8uRC8-oLlGh-mt6LgaCh_DJKHrBwp3T0'
+EXCEL_URL = 'https://cloud.melonfashion.ru/s/NGgy224L5QNDCfZ'
+FILE_PATH = '/tmp/duty_schedule.xlsx'  # временное хранение файла
 
-# Подключение к базе данных
-conn = sqlite3.connect('breaks.db', check_same_thread=False)
-cursor = conn.cursor()
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+scheduler = AsyncIOScheduler()
 
-# Создание таблицы для хранения данных о перерывах, если она ещё не создана
-cursor.execute('''CREATE TABLE IF NOT EXISTS user_breaks (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    break_time TEXT)''')
-conn.commit()
+# Функция для скачивания Excel-файла
+def download_excel_file():
+    response = requests.get(EXCEL_URL)
+    with open(FILE_PATH, 'wb') as f:
+        f.write(response.content)
 
-# Функция для создания кнопок выбора времени
-def create_time_buttons():
-    available_times = []
-    start_time = datetime.strptime("09:00", "%H:%M")
-    end_time = datetime.strptime("19:00", "%H:%M")
-    while start_time <= end_time:
-        available_times.append(start_time.strftime("%H:%M"))
-        start_time += timedelta(minutes=30)
+# Функция для чтения файла и извлечения данных
+def get_duty_schedule():
+    df = pd.read_excel(FILE_PATH)
+    # Пример, как можно извлекать данные (зависит от структуры Excel)
+    duty_today = df.loc[df['day'] == 'сегодня']  # фильтрация по текущему дню
+    # Форматирование сообщения
+    message = f"Доброго времени суток!\nСпешу сообщить, что сегодня в смене работают следующие сотрудники:\n\n"
+    for index, row in duty_today.iterrows():
+        message += f"{row['position']} {row['name']} ({row['phone']}) = @{row['telegram']}\n"
+    message += "\nЖелаю хорошего рабочего дня!"
+    return message
 
-    buttons = []
+# Функция для отправки сообщения в определённое время
+async def send_duty_message():
+    download_excel_file()  # Скачиваем актуальный файл
+    message = get_duty_schedule()  # Извлекаем информацию
+    await bot.send_message(chat_id='id_чата', text=message)
 
-    # Получаем уже выбранные времена
-    cursor.execute('SELECT break_time FROM user_breaks')
-    chosen_times = [row[0] for row in cursor.fetchall()]
+# Настройка отправки сообщения в 7:00 по МСК
+scheduler.add_job(send_duty_message, 'cron', hour=7, minute=0, timezone='Europe/Moscow')
 
-    # Создаем кнопки, если время не выбрано
-    for time in available_times:
-        if time not in chosen_times:
-            buttons.append([InlineKeyboardButton(time, callback_data=time)])
+# Команда выбора дня недели
+@dp.message_handler(commands=['choose_day'])
+async def choose_day(message: types.Message):
+    keyboard = types.InlineKeyboardMarkup()
+    days = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    for day in days:
+        keyboard.add(types.InlineKeyboardButton(day, callback_data=f"day_{day.lower()}"))
+    await message.answer("Выберите день недели:", reply_markup=keyboard)
 
-    return InlineKeyboardMarkup(buttons)
+# Обработка выбора дня
+@dp.callback_query_handler(lambda c: c.data.startswith('day_'))
+async def process_day_choice(callback_query: types.CallbackQuery):
+    day = callback_query.data.split('_')[1]
+    await callback_query.message.answer(f"Вы выбрали: {day}")
 
-# Команда /start для выбора времени перерыва
-def start(update: Update, context: CallbackContext) -> None:
-    user = update.message.from_user
-    cursor.execute('SELECT break_time FROM user_breaks WHERE user_id = ?', (user.id,))
-    result = cursor.fetchone()
-
-    if result:
-        update.message.reply_text(f'Вы уже выбрали время: {result[0]}.\nЕсли хотите отменить выбор, введите команду /cancel')
-    else:
-        update.message.reply_text('Выберите время для перерыва:', reply_markup=create_time_buttons())
-
-# Обработка выбора времени перерыва
-def button(update: Update, context: CallbackContext) -> None:
-    query = update.callback_query
-    query.answer()
-
-    user = query.from_user
-    selected_time = query.data
-
-    # Сохранение выбранного времени в базу данных
-    cursor.execute('INSERT INTO user_breaks (user_id, username, break_time) VALUES (?, ?, ?)',
-                   (user.id, user.username, selected_time))
-    conn.commit()
-
-    query.edit_message_text(f'Вы выбрали время перерыва: {selected_time}')
-
-    # Настройка уведомления за 10 минут до перерыва
-    schedule_reminder(user.id, selected_time, context)
-
-# Функция для отправки уведомления за 10 минут до перерыва
-def schedule_reminder(user_id, break_time_str, context: CallbackContext):
-    break_time = datetime.strptime(break_time_str, "%H:%M")
-    now = datetime.now()
-
-    # Расчет времени до перерыва и уведомление за 10 минут
-    reminder_time = break_time - timedelta(minutes=10)
-    time_until_reminder = (reminder_time - now).total_seconds()
-
-    if time_until_reminder > 0:
-        context.job_queue.run_once(send_reminder, time_until_reminder, context={'user_id': user_id, 'break_time': break_time_str})
-
-def send_reminder(context: CallbackContext):
-    job = context.job
-    user_id = job.context['user_id']
-    break_time = job.context['break_time']
-
-    # Отправка уведомления пользователю
-    context.bot.send_message(user_id, text=f'Ваш перерыв начинается через 10 минут в {break_time}!')
-
-# Команда для сброса выбора времени перерыва
-def cancel(update: Update, context: CallbackContext) -> None:
-    user = update.message.from_user
-
-    # Удаление записи из базы данных
-    cursor.execute('DELETE FROM user_breaks WHERE user_id = ?', (user.id,))
-    conn.commit()
-
-    update.message.reply_text('Ваш выбор времени перерыва сброшен. Выберите время снова с помощью /start')
-
-# Оповещение пользователей, не выбравших время до 12:00
-def check_unselected_users(context: CallbackContext):
-    now = datetime.now()
-
-    if now.hour == 12:  # Проверяем в 12:00
-        cursor.execute('SELECT user_id, username FROM user_breaks')
-        selected_users = [row[0] for row in cursor.fetchall()]
-
-        # Получаем список всех пользователей (вы можете хранить их в другой таблице или базе данных)
-        all_users = get_all_users()  # Предположим, у вас есть функция для получения всех пользователей
-
-        for user_id in all_users:
-            if user_id not in selected_users:
-                context.bot.send_message(user_id, text='Вы не выбрали время перерыва. Пожалуйста, выберите время через команду /start')
-
-# Функция для получения всех пользователей (замените на нужную логику)
-def get_all_users():
-    # Эта функция должна возвращать список всех пользователей вашего бота
-    # Например, это может быть список зарегистрированных пользователей
-    return [123456789, 987654321]  # Пример ID пользователей
-
-# Основная функция для запуска бота
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("cancel", cancel))
-    dp.add_handler(CallbackQueryHandler(button))
-
-    # Планирование ежедневной проверки в 12:00
-    updater.job_queue.run_daily(check_unselected_users, time=datetime.strptime("12:00", "%H:%M").time())
-
-    # Запуск бота
-    updater.start_polling()
-    updater.idle()
-
+# Старт бота
 if __name__ == '__main__':
-    main()
+    scheduler.start()  # Запускаем планировщик
+    executor.start_polling(dp, skip_updates=True)

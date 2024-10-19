@@ -8,19 +8,19 @@ API_TOKEN = '7777670053:AAG8uRC8-oLlGh-mt6LgaCh_DJKHrBwp3T0'
 EXCEL_URL = 'https://cloud.melonfashion.ru/s/NGgy224L5QNDCfZ'
 FILE_PATH = '/tmp/duty_schedule.xlsx'  # временное хранение файла
 
-bot = Bot(token=7777670053:AAG8uRC8-oLlGh-mt6LgaCh_DJKHrBwp3T0)
+bot = '7777670053:AAG8uRC8-oLlGh-mt6LgaCh_DJKHrBwp3T0'
 dp = Dispatcher(bot)
 scheduler = AsyncIOScheduler()
 
 # Функция для скачивания Excel-файла
 def download_excel_file():
     response = requests.get(EXCEL_URL)
-    with open(https://cloud.melonfashion.ru/s/NGgy224L5QNDCfZ, 'wb') as f:
+    with open (cloud.melonfashion.ru/s/NGgy224L5QNDCfZ, 'wb') as f:
         f.write(response.content)
 
 # Функция для чтения файла и извлечения данных
 def get_duty_schedule():
-    df = pd.read_excel(https://cloud.melonfashion.ru/s/NGgy224L5QNDCfZ)
+    df = pd.read_excel(cloud.melonfashion.ru/s/NGgy224L5QNDCfZ)
     # Пример, как можно извлекать данные (зависит от структуры Excel)
     duty_today = df.loc[df['day'] == 'сегодня']  # фильтрация по текущему дню
     # Форматирование сообщения
